@@ -90,7 +90,7 @@ export function createLinesGenerationController(env = {}) {
             travelAbort?.addEventListener('abort', abortFromTravel, { once: true });
             if (signal.aborted || travelAbort?.aborted) return { status: 'cancelled', reason: 'aborted' };
             const cfg = env.loadConfig();
-            if (!cfg?.url || !cfg?.key) { env.missingApi?.({ silent }); throw makeDiagnosticError('config-missing'); }
+            if (!(cfg?.ready || (cfg?.url && cfg?.key))) { env.missingApi?.({ silent }); throw makeDiagnosticError('config-missing'); }
             const savedValue = env.readSaved();
             const hasSavedRecord = savedValue !== null && savedValue !== undefined;
             const savedSnapshot = savedValue || {};

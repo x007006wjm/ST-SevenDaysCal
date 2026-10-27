@@ -1,16 +1,22 @@
 import { getSharedBodyWrappers, updateSharedBodyWrappers } from '../utils/shared-body-wrappers.js';
 import { initializeSharedProcessingPrompt, getSharedProcessingPrompt, updateSharedProcessingPrompt } from '../utils/shared-processing-prompt.js';
 // runtime/settings.js — 设置数据读写、功能开关与 API 预设。
-import { extension_settings } from '../../../../extensions.js';
+import { extension_settings, getContext } from '../../../../extensions.js';
 import { saveSettingsDebounced } from '../../../../../script.js';
 
 export const PLUGIN_ID  = 'schedule-planner';
 
 export const DEFAULT_SETTINGS = {
+    // 连接来源：'custom' = 构画自己填的 API（默认）；'host' = 继承酒馆当前生效的聊天补全 API。
+    // Vertex 服务账号这类「凭证只存在于酒馆服务端」的渠道只能走 host，构画不接触任何凭证。
+    apiMode : 'custom',
     apiUrl  : '',
     apiKey  : '',
     apiModel: '',
     apiAdditionalParams: '',
+    apiExcludeParams: [],
+    apiTimeoutSec: 180,
+    apiStream: false,
     // API 存储快切：把整套 API 配置存成命名预设，多套之间切换。
     // 每项保存 loadCfg 的完整快照；spAdditionalParams 归构画所有，其他插件的参数各自保留。
     // 与上面扁平的 apiUrl/apiKey/... 并存：当前配置字段仍是「当前生效」的唯一真源，
@@ -162,11 +168,52 @@ export function normalizeApiTimeout(value) {
     return Number.isInteger(n) && n >= 5 && n <= 600 ? n : 180;
 }
 
+// 连接来源：'custom' = 构画自填的 API；'host' = 继承酒馆当前生效的聊天补全 API。
+export const API_MODE_CUSTOM = 'custom';
+export const API_MODE_HOST   = 'host';
+
+export function normalizeApiMode(value) {
+    return value === API_MODE_HOST ? API_MODE_HOST : API_MODE_CUSTOM;
+}
+
+// 继承酒馆 API 依赖酒馆前端公开的上下文：聊天补全服务 + 当前 API 设置。
+// 文本补全（main_api !== 'openai'）无法继承；酒馆版本不提供 payload 构造能力时也判为不可用。
+export function hostApiAvailable() {
+    try {
+        const ctx = getContext?.();
+        if (!ctx || ctx.mainApi !== 'openai') return false;
+        if (!ctx.chatCompletionSettings) return false;
+        return typeof ctx.ChatCompletionService?.presetToGeneratePayload === 'function';
+    } catch { return false; }
+}
+
+// 全插件唯一的「API 是否可用」判定：自定义模式看 url/key，继承模式看酒馆上下文。
+export function isCfgReady(cfg) {
+    return cfg?.mode === API_MODE_HOST ? hostApiAvailable() : !!(cfg?.url && cfg?.key);
+}
+
+// 未就绪时的诊断码：区分「没填 API」与「酒馆当前接口无法继承」，让用户知道该改哪边。
+export function apiErrorCode(cfg) {
+    return cfg?.mode === API_MODE_HOST ? 'host-unavailable' : 'config-missing';
+}
+
+// 预设快照的就绪判定：host 预设没有 url/key，只看模式。
+function isPresetReady(p) {
+    return normalizeApiMode(p?.mode) === API_MODE_HOST ? hostApiAvailable() : !!(p?.url && p?.key);
+}
+
 export function loadCfg() {
     const s = getSettings();
+    const mode = normalizeApiMode(s.apiMode);
+    const url = s.apiUrl || '';
+    const key = s.apiKey || '';
     return {
-        url          : s.apiUrl   || '',
-        key          : s.apiKey   || '',
+        mode,
+        // 纯业务模块（不 import 设置层，靠注入的 config() 取值）只认这两个字段：
+        // ready 表示「连接就绪」，host 模式下 url/key 为空但 ready 为真。
+        ready        : mode === API_MODE_HOST ? hostApiAvailable() : !!(url && key),
+        url,
+        key,
         model        : s.apiModel || '',
         spAdditionalParams: s.apiAdditionalParams || '',
         excludeParams: Array.isArray(s.apiExcludeParams) ? s.apiExcludeParams : [],
@@ -180,8 +227,10 @@ export function loadUtilityCfg() {
     const id = getSettings().utilityPresetId || '';
     if (!id) return loadCfg();
     const p = loadApiPresets().find(x => x.id === id);
-    if (!p || !p.url || !p.key) return loadCfg();   // 预设被删/缺 url/key → 退回主 API
+    if (!p || !isPresetReady(p)) return loadCfg();   // 预设被删/缺连接 → 退回主 API
     return {
+        mode         : normalizeApiMode(p.mode),
+        ready        : true,
         url          : p.url   || '',
         key          : p.key   || '',
         model        : p.model || '',
@@ -195,8 +244,10 @@ export function loadUtilityCfg() {
 export function loadTheaterCfg() {
     const id = getSettings().theaterPresetId || '';
     const p = id ? loadApiPresets().find(x => x.id === id) : null;
-    if (!p || !p.url || !p.key) return loadCfg();
+    if (!p || !isPresetReady(p)) return loadCfg();
     return {
+        mode         : normalizeApiMode(p.mode),
+        ready        : true,
         url          : p.url,
         key          : p.key,
         model        : p.model || '',
@@ -210,6 +261,7 @@ export function loadTheaterCfg() {
 export function saveCfg(c) {
     parseAdditionalParams(c.spAdditionalParams);
     const s = getSettings();
+    s.apiMode          = normalizeApiMode(c.mode);
     s.apiUrl           = c.url   || '';
     s.apiKey           = c.key   || '';
     s.apiModel         = c.model || '';
@@ -235,6 +287,7 @@ export function upsertApiPreset(name, cfg, id) {
     const timeout = normalizeApiTimeout(cfg?.timeoutSec);
     const snap = {
         name         : String(name || '').trim() || '未命名',
+        mode         : normalizeApiMode(cfg.mode),
         url          : cfg.url   || '',
         key          : cfg.key   || '',
         model        : cfg.model || '',

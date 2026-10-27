@@ -78,7 +78,7 @@ export function createLedgerJudgeController(options = {}) {
             if (reconcile?.summary) reconcile.summary.judgeable = judgeable.length;
             if (!judgeable.length) return { status: 'skipped', reason: 'no-entry', reconcile, applied: [] };
             const cfg = env.config?.();
-            if (!cfg?.url || !cfg?.key) return { status: 'failed', reason: 'no-api', error: Object.assign(new Error('未配置 API'), { diagnosticCode: 'config-missing' }), reconcile, applied: [] };
+            if (!(cfg?.ready || (cfg?.url && cfg?.key))) return { status: 'failed', reason: 'no-api', error: Object.assign(new Error('未配置 API'), { diagnosticCode: 'config-missing' }), reconcile, applied: [] };
             const judgePrompt = buildJudgePrompt(env, date, judgeable, floor);
             let raw;
             try { raw = await env.callApi(ctx, env.appendTravel?.(judgePrompt, travel) || judgePrompt, cfg, ctx.name1 || '用户', ctx.name2 || '角色', ctrl.signal, JUDGE_FLOORS, { ...(travel || {}), noAlmanac: true, ledgerCutoffFloor: floor, diagnosticModule: 'ledger-judge', diagnosticSink: diagnostic.sink }); }

@@ -4,7 +4,7 @@ import { isDiagnosticRequestId, safeSaveDiagnosticFields, traceDiagnosticEvent }
 import { recordDiagnosticResult } from '../runtime/chat-storage.js';
 
 const CODES = new Set([
-    'config-missing', 'http-400', 'auth', 'not-found', 'rate-limit', 'server',
+    'config-missing', 'host-unavailable', 'http-400', 'auth', 'not-found', 'rate-limit', 'server',
     'timeout', 'upstream-timeout', 'network', 'invalid-json', 'response-error', 'empty-output', 'truncated', 'sse-invalid', 'unknown',
     'parse', 'invalid-structure', 'invalid-fields', 'save', 'recoverable-fallback', 'memory-stale', 'memory-read',
 ]);
@@ -34,7 +34,8 @@ export function classifyGenerationError(error, { status = 0, phase = 'request' }
 }
 
 const MESSAGES = Object.freeze({
-    'config-missing': '请先配置 API',
+    'config-missing': '请先配置 API，或在设置中选择「跟随酒馆当前 API」。',
+    'host-unavailable': '无法继承酒馆 API：请确认酒馆当前使用聊天补全 API，且酒馆版本支持连接继承。',
     'http-400': '接口不接受当前请求参数，请检查模型配置或移除不支持的参数。',
     auth: '接口拒绝访问，请检查 Key 和模型权限。',
     'not-found': 'AI 接口地址不可用，请检查 Base URL。',

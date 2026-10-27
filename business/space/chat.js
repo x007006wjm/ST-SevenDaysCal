@@ -32,7 +32,7 @@ export function createSpaceChat(env = {}) {
         let uiError = null;
         try {
             const config = env.loadConfig?.() || {};
-            if (!config.url || !config.key) {
+            if (!config.ready && (!config.url || !config.key)) {
                 env.openSettings?.();
                 throw makeDiagnosticError('config-missing');
             }

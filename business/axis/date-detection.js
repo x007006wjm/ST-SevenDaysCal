@@ -78,7 +78,7 @@ export function createDateDetectionController(options = {}) {
         const ownerIdentity = { ...identity(), participantIdentity };
         options.clearFailure?.(ownerIdentity);
         const cfg = options.config?.();
-        if (!cfg?.url || !cfg?.key) {
+        if (!cfg?.ready && (!cfg?.url || !cfg?.key)) {
             const error = makeDiagnosticError('config-missing');
             options.failure?.(error, ownerIdentity, '日期判定');
             options.logDiagnostic?.(safeDiagnosticLog('axis', 'request', error, { background: true }));

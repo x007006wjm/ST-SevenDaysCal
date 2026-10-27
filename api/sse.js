@@ -12,7 +12,13 @@ export function normalizeApiUrl(url) {
 
 // 固定路由字段：这些是走 ST 代理必需的，即便用户填进剔除框也不能删（否则请求直接废掉）。
 // 兼容端点可能仍会在错误信息中提到 max_tokens；构画请求本身不指定输出长度。
-export const PROTECTED_BODY_KEYS = new Set(['chat_completion_source', 'reverse_proxy', 'proxy_password', 'model', 'messages']);
+// 继承酒馆 API 时，连接与鉴权字段（custom_url / secret_id / vertexai_* 等）同样属于路由，
+// 由酒馆决定，用户剔除它们只会把请求削坏。
+export const PROTECTED_BODY_KEYS = new Set([
+    'chat_completion_source', 'reverse_proxy', 'proxy_password', 'model', 'messages',
+    'custom_url', 'custom_include_body', 'custom_include_headers',
+    'secret_id', 'vertexai_region', 'vertexai_auth_mode', 'vertexai_express_project_id',
+]);
 
 // 推理模型（GLM / o1 等）常把输出预算耗在思维链上，导致正文为空；
 // 代理层遇到空候选会回一个 `<none>` 之类的占位错误。统一给用户一句可诊断的说明。

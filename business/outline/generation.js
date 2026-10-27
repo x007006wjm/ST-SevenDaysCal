@@ -75,7 +75,7 @@ export function createOutlineGeneration({
             const userName = ctx?.name1 || '用户';
             const charName = ctx?.name2 || '角色';
             const config = loadConfig?.() || {};
-            if (!config.url || !config.key) {
+            if (!config.ready && (!config.url || !config.key)) {
                 openSettings?.();
                 throw makeDiagnosticError('config-missing');
             }

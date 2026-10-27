@@ -42,7 +42,7 @@ import {
 import { escapeHtml, escapeAttr, autoGrowTextarea, cleanText } from './utils/dom.js';
 import { _cnToNumber, _CN_MONTH_ALIAS, extractDayFromTime } from './utils/cn-date.js';
 import { weatherGlyph, maskKey } from './utils/format.js';
-import { getSettings, getWrapperSettings, updateWrapperSettings, parseExcludeParams, parseAdditionalParams, loadCfg, loadUtilityCfg, saveCfg, loadApiPresets, upsertApiPreset, deleteApiPreset, renameApiPreset, fabEnabled, getLinesInterval, saveLinesInterval, getLinesMode, saveLinesMode } from './runtime/settings.js';
+import { getSettings, getWrapperSettings, updateWrapperSettings, parseExcludeParams, parseAdditionalParams, loadCfg, loadUtilityCfg, saveCfg, loadApiPresets, upsertApiPreset, deleteApiPreset, renameApiPreset, fabEnabled, getLinesInterval, saveLinesInterval, getLinesMode, saveLinesMode, hostApiAvailable, API_MODE_HOST } from './runtime/settings.js';
 import { setProcessingPrompt } from './runtime/settings.js';
 import { BASE_PROCESSING_PROMPT } from './utils/shared-processing-prompt.js';
 import { QUICK_REPLY_SHORTCUTS, createQuickReplyShortcutSync, registerQuickReplyShortcutCommand } from './runtime/quick-reply-shortcuts.js';
@@ -564,9 +564,9 @@ dailyMenuController = createDailyMenuController({
     },
     generate: (prompt, signal, diagnosticSink) => {
         const cfg = loadCfg();
-        if (!cfg.url || !cfg.key) {
+        if (!(cfg.ready || (cfg.url && cfg.key))) {
             if (!settingsOpen) toggleSettings();
-            throw makeDiagnosticError('config-missing');
+            throw makeDiagnosticError(cfg.mode === API_MODE_HOST ? 'host-unavailable' : 'config-missing');
         }
         const ctx = getContext();
         return callCustomApi(ctx, prompt, cfg, ctx.name1 || '用户', ctx.name2 || '角色', signal, 3, { diagnosticModule: 'point', diagnosticSink, includeMemory: false });
@@ -1279,7 +1279,8 @@ function directionValue(result) {
 function timeTravelDirectionLoadErrorText(error) {
     const phase = error?.phase || 'request';
     const code = classifyGenerationError(error, { phase });
-    if (code === 'config-missing') return '请先在设置中填写自定义 API 的 URL 和 Key；也可以返回后直接采用。';
+    if (code === 'config-missing') return '请先在设置中填写自定义 API 的 URL 和 Key，或改为跟随酒馆当前 API；也可以返回后直接采用。';
+    if (code === 'host-unavailable') return '酒馆当前没有可继承的聊天补全 API（或版本不支持继承）；请改用自定义 API，或返回后直接采用。';
     if (code === 'empty-output') return 'AI 没有返回可用的推演方向，请重新加载或返回后直接采用。';
     if (code === 'unknown') return '读取 AI 推演方向失败，请检查自定义 API 设置后重试，或返回后直接采用。';
     return `读取 AI 推演方向失败：${diagnosticMessage(error, { phase })}`;
@@ -1367,7 +1368,7 @@ async function startTimeTravel(targetDate) {
                 loadChoices: async ({ signal }) => {
                     if (!isTimeTravelSelectionCurrent(run)) throw Object.assign(new Error('时旅选择已结束'), { name: 'AbortError' });
                     const cfg = loadCfg();
-                    if (!cfg.url || !cfg.key) throw makeDiagnosticError('config-missing');
+                    if (!(cfg.ready || (cfg.url && cfg.key))) throw makeDiagnosticError(cfg.mode === API_MODE_HOST ? 'host-unavailable' : 'config-missing');
                     const live = collectTimeTravelContext(run.sourceDate, run.targetDate);
                     const prompt = buildTravelDirectionPrompt({ ...live, preference, excluded });
                     const ctx = getContext();
@@ -3251,7 +3252,9 @@ function bindLinesHistoryUi($linesWrap) {
 function injectModal() {
     pluginUpdatesView?.dispose();
     const cfg = loadCfg();
-    const hasCustomApi = !!(cfg.url && cfg.key);
+    // 连接来源：自定义 API / 继承酒馆当前 API（host）。host 不保存凭证，只看酒馆上下文可用性。
+    const apiInheritsHost = cfg.mode === API_MODE_HOST;
+    const hasCustomApi = apiInheritsHost ? hostApiAvailable() : !!(cfg.url && cfg.key);
     // 弹窗宿主独立于主面板：主面板关闭时仍保持可见，空宿主不拦截页面点击。
     const dialogHost = document.createElement('div');
     dialogHost.id = DIALOG_HOST_ID;
@@ -3357,12 +3360,23 @@ function injectModal() {
                             <details class="sp-settings-section">
                                 <summary class="sp-settings-section-title">API</summary>
                                 <div class="sp-settings-section-body">
-                                    <div class="sp-api-notice ${hasCustomApi ? 'sp-notice-ok' : 'sp-notice-warn'}">
+                                    <div id="sp-api-notice" class="sp-api-notice ${hasCustomApi ? 'sp-notice-ok' : 'sp-notice-warn'}">
                                         ${icon(hasCustomApi ? 'circle-check' : 'alert-triangle')}
                                         ${hasCustomApi
-                                            ? '已配置独立 API，后台生成不影响聊天'
-                                            : '未配置内容 API：请填写 Base URL 与 API Key；小剧场也可使用下方单独选择的预设'}
+                                            ? (apiInheritsHost
+                                                ? '正在跟随酒馆当前 API：接口与凭证都由酒馆管理，后台生成不影响聊天'
+                                                : '已配置独立 API，后台生成不影响聊天')
+                                            : (apiInheritsHost
+                                                ? '酒馆当前不是聊天补全 API（或版本不支持继承），无法跟随；请改用自定义 API'
+                                                : '未配置内容 API：请填写 Base URL 与 API Key，或改为跟随酒馆当前 API')}
                                     </div>
+                                    <div class="sp-preset-row" style="margin-bottom:8px">
+                                        <label class="sp-mode-opt"><input type="radio" name="sp-api-mode" value="custom" ${apiInheritsHost ? '' : 'checked'}><span>自定义 API</span></label>
+                                        <label class="sp-mode-opt"><input type="radio" name="sp-api-mode" value="host" ${apiInheritsHost ? 'checked' : ''}><span>跟随酒馆当前 API</span></label>
+                                    </div>
+                                    <p id="sp-api-host-hint" class="sp-cfg-hint" style="display:${apiInheritsHost ? '' : 'none'}">
+                                        跟随酒馆「聊天补全」当前选中的接口、模型与渠道（含 Vertex 服务账号等只能在酒馆服务端鉴权的渠道）；构画不再保存任何凭证。模型留空时跟随酒馆当前模型。
+                                    </p>
                                     <p class="sp-cfg-hint">模型名留空时使用当前内置默认 gpt-4o-mini</p>
 
                                     <!-- API 存储快切：点假框→就地展开内联预设列表（非原生 select 弹窗，避开 WebView 里弹层被插件盖住）；选一项填入下方输入框即生效；＋新增按域名自动命名、🗑删除，均即时落 settings.json -->
@@ -3376,17 +3390,19 @@ function injectModal() {
                                     </div>
                                     <div id="sp-preset-list" class="sp-preset-list" style="display:none"></div>
                                     <p id="sp-preset-hint" class="sp-cfg-hint sp-preset-hint" style="display:none"></p>
-                                    <input id="sp-cfg-url" class="sp-input" type="url"
-                                           placeholder="Base URL，如 https://api.openai.com/v1"
-                                           value="${escapeAttr(cfg.url || '')}">
-                                    <div class="sp-key-row">
-                                        <input id="sp-cfg-key" class="sp-input sp-key-input" type="password"
-                                               placeholder="API Key" value="${escapeAttr(cfg.key || '')}">
-                                        <button id="sp-key-toggle" class="sp-eye-btn" title="显示密钥" aria-label="显示密钥">${icon("eye")}</button>
+                                    <div id="sp-api-custom-fields" style="display:${apiInheritsHost ? 'none' : ''}">
+                                        <input id="sp-cfg-url" class="sp-input" type="url"
+                                               placeholder="Base URL，如 https://api.openai.com/v1"
+                                               value="${escapeAttr(cfg.url || '')}">
+                                        <div class="sp-key-row">
+                                            <input id="sp-cfg-key" class="sp-input sp-key-input" type="password"
+                                                   placeholder="API Key" value="${escapeAttr(cfg.key || '')}">
+                                            <button id="sp-key-toggle" class="sp-eye-btn" title="显示密钥" aria-label="显示密钥">${icon("eye")}</button>
+                                        </div>
                                     </div>
                                     <div class="sp-model-row">
                                         <input id="sp-cfg-model" class="sp-input sp-model-input" type="text"
-                                               placeholder="模型名称，如 gpt-4o-mini"
+                                               placeholder="${apiInheritsHost ? '模型名，留空=跟随酒馆当前模型' : '模型名称，如 gpt-4o-mini'}"
                                                value="${escapeAttr(cfg.model || '')}">
                                         <button id="sp-fetch-models" class="sp-fetch-btn" title="拉取模型列表">
                                             ${icon("list")}
@@ -4034,6 +4050,7 @@ function injectModal() {
     });
 
     if (cfg.key) $in('#sp-cfg-key').val(maskKey(cfg.key)).data('real', cfg.key);
+    applyApiModeUi();
 
     // 排除卡只允许操作设置；捕获阶段拦下残留业务 DOM，避免任何旧页面按钮先于委托门控执行。
     _spShadow.addEventListener('click', event => {
@@ -4808,6 +4825,13 @@ function injectModal() {
     });
     $in('#sp-cfg-timeout').on('input change', function () { const raw = String(this.value ?? '').trim(); const n = Number(raw); syncPresetState(); if (!raw || !Number.isInteger(n) || n < 5 || n > 600) return; getSettings().apiTimeoutSec = n; saveSettingsDebounced(); });
     $in('#sp-cfg-stream').on('change', function () { getSettings().apiStream = this.checked; saveSettingsDebounced(); syncPresetState(); });
+    // 连接来源切换：立即落盘并重排输入区；URL/Key 只是隐藏，切回自定义不丢值。
+    $in('input[name="sp-api-mode"]').on('change', function () {
+        getSettings().apiMode = this.value === 'host' ? API_MODE_HOST : 'custom';
+        saveSettingsDebounced();
+        applyApiModeUi();
+        syncPresetState();
+    });
     $in('#sp-lines-interval').on('input change', function () { const n = Number(this.value); if (!Number.isInteger(n) || n < 1) return; saveLinesInterval(n); this.value = String(n); });
 
     $in('#sp-body').on('click', '.sp-tab', function () {
@@ -5836,9 +5860,9 @@ function abortAlmanacGen() {
 
 async function generate(ctx, userName, charName, perspective = 'user', signal = null, pinned = null, travelContext = null, adultMode = 'off', diagnosticSink = null, memoryContext = null) {
     const cfg = loadCfg();
-    if (!cfg.url || !cfg.key) {
+    if (!(cfg.ready || (cfg.url && cfg.key))) {
         if (!settingsOpen) toggleSettings();
-        throw makeDiagnosticError('config-missing');
+        throw makeDiagnosticError(cfg.mode === API_MODE_HOST ? 'host-unavailable' : 'config-missing');
     }
     // 生成使用本轮捕获角色的设置，避免异步任务切换角色后串入另一角色偏好。
     const characterKey = charStableKey(ctx);
@@ -9212,6 +9236,39 @@ function toggleKeyVisibility() {
 }
 
 // ─── API 存储快切：UI 事件 + 下拉渲染 ────────────────────────────────────────
+// 当前是否「跟随酒馆 API」模式（只看已渲染的单选，不读设置，便于处理未保存草稿）。
+function apiInputsHostMode() {
+    return $in('input[name="sp-api-mode"]:checked').val() === API_MODE_HOST;
+}
+
+// 顶部状态条：随模式/输入实时反映「这个 API 到底能不能用」。
+function syncApiNotice() {
+    const $notice = $in('#sp-api-notice');
+    if (!$notice.length) return;
+    const host = apiInputsHostMode();
+    const ready = host
+        ? hostApiAvailable()
+        : !!($in('#sp-cfg-url').val().trim() && ($in('#sp-cfg-key').data('real') || $in('#sp-cfg-key').val() || '').trim());
+    const text = host
+        ? (ready
+            ? '正在跟随酒馆当前 API：接口与凭证都由酒馆管理，后台生成不影响聊天'
+            : '酒馆当前不是聊天补全 API（或版本不支持继承），无法跟随；请改用自定义 API')
+        : (ready
+            ? '已配置独立 API，后台生成不影响聊天'
+            : '未配置内容 API：请填写 Base URL 与 API Key，或改为跟随酒馆当前 API');
+    $notice.toggleClass('sp-notice-ok', ready).toggleClass('sp-notice-warn', !ready)
+        .html(`${icon(ready ? 'circle-check' : 'alert-triangle')} ${escapeHtml(text)}`);
+}
+
+// 模式切换后的界面重排：host 隐藏 URL/Key 输入，模型框转为「留空=跟随酒馆模型」。
+function applyApiModeUi() {
+    const host = apiInputsHostMode();
+    $in('#sp-api-custom-fields').toggle(!host);
+    $in('#sp-api-host-hint').toggle(host);
+    $in('#sp-cfg-model').attr('placeholder', host ? '模型名，留空=跟随酒馆当前模型' : '模型名称，如 gpt-4o-mini');
+    syncApiNotice();
+}
+
 // 从当前输入框读出这一套 API 配置（含未点保存的改动、Key 取 data('real') 真值）。
 function readApiInputs() {
     const $k = $in('#sp-cfg-key');
@@ -9219,6 +9276,7 @@ function readApiInputs() {
     const timeout = Number(rawTimeout);
     const timeoutValid = rawTimeout !== '' && Number.isInteger(timeout) && timeout >= 5 && timeout <= 600;
     return {
+        mode         : apiInputsHostMode() ? API_MODE_HOST : 'custom',
         url          : $in('#sp-cfg-url').val().trim().replace(/\/$/, ''),
         key          : ($k.data('real') || $k.val() || '').trim(),
         model        : $in('#sp-cfg-model').val().trim(),
@@ -9232,6 +9290,7 @@ function readApiInputs() {
 
 function apiPresetSnapshotKey(cfg) {
     return JSON.stringify({
+        mode: cfg?.mode === API_MODE_HOST ? API_MODE_HOST : 'custom',
         url: cfg?.url || '', key: cfg?.key || '', model: cfg?.model || '',
         excludeParams: Array.isArray(cfg?.excludeParams) ? cfg.excludeParams : [],
         spAdditionalParams: String(cfg?.spAdditionalParams || '').trim(),
@@ -9262,8 +9321,9 @@ function apiInputsError(cfg) {
 function saveCurrentAsPreset() {
     const cur = readApiInputs();
     if (!apiInputsSaveable(cur)) { showPresetHint(`${apiInputsError(cur)}，未保存预设`); return null; }
-    if (!cur.url && !cur.key) { showPresetHint('先填 API 再保存预设'); return null; }
-    const name = autoPresetName(cur.url);
+    // 跟随酒馆 API 的预设本来就没有 url/key，不能按“先填 API”拦下。
+    if (cur.mode !== API_MODE_HOST && !cur.url && !cur.key) { showPresetHint('先填 API 再保存预设'); return null; }
+    const name = autoPresetName(cur.url, cur.mode === API_MODE_HOST);
     upsertApiPreset(name, cur, null);
     renderApiPresetList();
     renderUtilityPresetList();
@@ -9273,6 +9333,8 @@ function saveCurrentAsPreset() {
 
 // 把一套预设填回输入框。Key 走 maskKey 遮罩 + data('real') 存真值。
 function fillApiInputs(p) {
+    const mode = p.mode === API_MODE_HOST ? API_MODE_HOST : 'custom';
+    $in(`input[name="sp-api-mode"][value="${mode}"]`).prop('checked', true);
     $in('#sp-cfg-url').val(p.url || '');
     const $k = $in('#sp-cfg-key');
     if (p.key) $k.data('real', p.key).val(maskKey(p.key)).attr('type', 'password');
@@ -9282,6 +9344,7 @@ function fillApiInputs(p) {
     $in('#sp-cfg-additional').val(p.spAdditionalParams || '');
     $in('#sp-cfg-timeout').val(p.timeoutSec || 180);
     $in('#sp-cfg-stream').prop('checked', p.stream === true);
+    applyApiModeUi();
 }
 
 // 渲染内联预设列表：在流内展开，非原生 <select> 弹窗——与「模型列表」同一套内联思路，
@@ -9525,10 +9588,13 @@ function syncUtilityPresetLabel() {
     $lb.text(p ? `机械任务 → ${p.name}` : '跟随主 API（不分流）');
 }
 
-// 按 URL 域名生成预设名；无 URL 用「预设」。撞已有名自动加 -2/-3…
-function autoPresetName(url) {
+// 按 URL 域名生成预设名；跟随酒馆 API 用「酒馆当前 API」；无 URL 用「预设」。撞已有名自动加 -2/-3…
+function autoPresetName(url, inheritHost = false) {
     let base = '';
-    try { base = url ? new URL(url).hostname.replace(/^www\./, '') : ''; } catch { base = ''; }
+    if (inheritHost) base = '酒馆当前 API';
+    else {
+        try { base = url ? new URL(url).hostname.replace(/^www\./, '') : ''; } catch { base = ''; }
+    }
     if (!base) base = '预设';
     const names = new Set(loadApiPresets().map(p => p.name));
     if (!names.has(base)) return base;

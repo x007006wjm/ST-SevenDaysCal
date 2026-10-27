@@ -357,7 +357,7 @@ function createPersistentLedgerCaptureController(options) {
         if (persisted.checkpoint && !resumed) return { status: 'failed', reason: 'checkpoint-invalid', feedbackShown: false };
         if (resumed && !manual) return { status: 'needs-confirmation', reason: 'provenance-resume-manual', feedbackShown: false };
         const cfg = env.config?.();
-        if (!resumed && (!cfg?.url || !cfg?.key)) return { status: 'failed', reason: 'no-api', feedbackShown: false };
+        if (!resumed && !(cfg?.ready || (cfg?.url && cfg?.key))) return { status: 'failed', reason: 'no-api', feedbackShown: false };
         const ctrl = new AbortController(); abortController = ctrl; busy = true;
         const ownerSnapshot = ledgerOwnerIdentity(ctx);
         const chatId = resumed?.checkpoint.chatId || ctx.chatId;
@@ -622,7 +622,7 @@ export function createLedgerCaptureController(options = {}) {
             return { status: 'needs-confirmation', reason: 'provenance-resume-manual', feedbackShown: true };
         }
         const cfg = env.config?.();
-        if (!checkpoint && (!cfg?.url || !cfg?.key)) { if (manual) env.toast?.('请先在设置中填写 API', null, true); return { status: 'failed', reason: 'no-api', error: Object.assign(new Error('未配置 API'), { diagnosticCode: 'config-missing' }), feedbackShown: manual }; }
+        if (!checkpoint && !(cfg?.ready || (cfg?.url && cfg?.key))) { if (manual) env.toast?.('请先在设置中填写 API', null, true); return { status: 'failed', reason: 'no-api', error: Object.assign(new Error('未配置 API'), { diagnosticCode: 'config-missing' }), feedbackShown: manual }; }
         const fixedTarget = checkpoint?.fixedTarget ?? env.target?.();
         const chatId = checkpoint?.chatId ?? ctx.chatId;
         const ownerSnapshot = checkpoint?.ownerSnapshot ?? ledgerOwnerIdentity(ctx);
@@ -695,7 +695,7 @@ export function createLedgerCaptureController(options = {}) {
                     let result;
                     try {
                         const provenanceCfg = env.provenanceConfig?.() || cfg;
-                        if (!provenanceCfg?.url || !provenanceCfg?.key) throw Object.assign(new Error('未配置 API'), { diagnosticCode: 'config-missing' });
+                        if (!(provenanceCfg?.ready || (provenanceCfg?.url && provenanceCfg?.key))) throw Object.assign(new Error('未配置 API'), { diagnosticCode: 'config-missing' });
                         result = await env.callApi(ctx, buildProvenancePrompt(unresolved, i + 1, provenanceBatches.length), provenanceCfg, userName, charName, ctrl.signal, 0, { ...sourceTravel, noAlmanac: true, ledgerCutoffFloor: captureFloor, ledgerSourceFloors: batch, temperature: 0.3, diagnosticModule: 'ledger-provenance', diagnosticSink: provenanceDiagnostic.sink });
                     }
                     catch (error) {

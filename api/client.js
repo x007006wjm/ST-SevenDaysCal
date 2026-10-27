@@ -1,6 +1,6 @@
 import { getContext } from '../../../../extensions.js';
 import { substituteParams } from '../../../../../script.js';
-import { getSettings, getProcessingPrompt, pluginEnabled, loadUtilityCfg, loadTheaterCfg, parseAdditionalParams } from '../runtime/settings.js';
+import { getSettings, getProcessingPrompt, pluginEnabled, loadUtilityCfg, loadTheaterCfg, parseAdditionalParams, isCfgReady, hostApiAvailable, API_MODE_HOST } from '../runtime/settings.js';
 import { prependProcessingPrompt, resolveSharedProcessingPrompt } from '../utils/shared-processing-prompt.js';
 import {
     normalizeApiUrl,
@@ -194,13 +194,72 @@ export async function postChatCompletion(options = {}) {
     }
 }
 
+// 继承酒馆 API 时，请求体交给酒馆自己的构造器生成：它按当前 chat_completion_source
+// 把连接、鉴权（如 Vertex 服务账号的 vertexai_auth_mode / vertexai_region）与采样参数一次带全。
+// 因此酒馆后端收到的 body 与主聊天同源，构画全程不接触任何凭证。
+// 模型字段沿用酒馆的 `<source>_model` 约定，makersuite（AI Studio）例外为 google_model。
+function resolveHostModel(settings) {
+    const source = String(settings?.chat_completion_source || '').trim();
+    if (!source) return '';
+    const field = source === 'makersuite' ? 'google_model' : `${source}_model`;
+    return String(settings?.[field] || '').trim();
+}
+
+async function buildHostBody({ ctx, messages, stream, temperature, model }) {
+    const settings = ctx?.chatCompletionSettings;
+    const service = ctx?.ChatCompletionService;
+    if (!settings || typeof service?.presetToGeneratePayload !== 'function') throw makeDiagnosticError('host-unavailable');
+    if (ctx.mainApi && ctx.mainApi !== 'openai') throw makeDiagnosticError('host-unavailable');
+    let body;
+    try {
+        // 空预设 = 不套酒馆的补全预设；messages / 模型 / 流式 / 温度由构画指定。
+        body = await service.presetToGeneratePayload({}, {}, {
+            messages,
+            model: String(model || '').trim() || resolveHostModel(settings),
+            stream,
+            ...(Number.isFinite(temperature) ? { temperature } : {}),
+        });
+    } catch (error) {
+        const wrapped = makeDiagnosticError('host-unavailable', { phase: 'request' });
+        wrapped.cause = error;
+        throw wrapped;
+    }
+    if (!body || typeof body !== 'object') throw makeDiagnosticError('host-unavailable');
+    // 连接继承酒馆，输出合同仍归构画：主聊天的 JSON 模式 / 多候选会让正文解析失真。
+    delete body.json_schema;
+    delete body.response_format;
+    delete body.n;
+    body.messages = messages;
+    body.stream = stream === true;
+    return body;
+}
+
+function buildCustomBody({ cfg, messages, temperature }) {
+    const body = {
+        chat_completion_source: 'openai',
+        reverse_proxy         : normalizeApiUrl(cfg.url),
+        proxy_password        : cfg.key,
+        model                 : cfg.model || 'gpt-4o-mini',
+        messages,
+        stream                : cfg.stream === true,
+        presence_penalty      : 0,
+        frequency_penalty     : 0,
+    };
+    if (Number.isFinite(temperature)) body.temperature = temperature;
+    return body;
+}
+
 async function postChatCompletionCore({ cfg, messages, temperature, signal: inputSignal = null, userName = '', charName = '', allowEmptyOutput = false, diagnosticLifecycle = null, diagnosticTraceBase = null } = {}) {
     const signal = normalizeAbortSignal(inputSignal);
     throwIfPreAborted(signal);
     // 总开关硬闸：插件关闭时挡住一切生成（手动 + 后台判定），防任何路径漏网。tag 供调用方识别、静默处理。
     if (!_bridge.enabled()) { const e = makeDiagnosticError('config-missing'); e.spDisabled = true; throw e; }
     if (hasLegacyChatStorage()) throw new Error('请先到构画设置的存储管理中，将旧数据迁回当前聊天');
-    if (!cfg?.url || !cfg?.key) throw makeDiagnosticError('config-missing');
+    // 连接来源两种：自定义 API 需要 url+key；继承酒馆 API 只需要酒馆上下文可用。
+    const inheritHost = cfg?.mode === API_MODE_HOST;
+    if (inheritHost ? !hostApiAvailable() : !(cfg?.url && cfg?.key)) {
+        throw makeDiagnosticError(inheritHost ? 'host-unavailable' : 'config-missing');
+    }
     const ctx = getContext();
     if (!ctx?.getRequestHeaders) throw new Error('SillyTavern 上下文不可用');
     const requestUserName = String(userName || ctx.name1 || '用户');
@@ -214,27 +273,24 @@ async function postChatCompletionCore({ cfg, messages, temperature, signal: inpu
     messages = si >= 0
         ? messages.map((m, idx) => idx === si ? { ...m, content: prependProcessingPrompt(m.content, custom) } : m)
         : custom.trim() ? [{ role: 'system', content: custom }, ...messages] : messages;
-    // 调试面板「🐛 AI 输入」的数据源：记在共用提示词注入之后，展示真实请求。
-    _bridge.setLastDebugPayload({ model: cfg.model || 'gpt-4o-mini', messages });
-    const body = {
-        chat_completion_source: 'openai',
-        reverse_proxy         : normalizeApiUrl(cfg.url),
-        proxy_password        : cfg.key,
-        model                 : cfg.model || 'gpt-4o-mini',
-        messages,
-        stream,
-        presence_penalty      : 0,
-        frequency_penalty     : 0,
-    };
-    if (Number.isFinite(temperature)) body.temperature = temperature;
+    // 请求体：继承酒馆 API 走酒馆构造器（连接/鉴权由酒馆负责），否则沿用构画自填的 OpenAI 兼容通道。
+    const body = inheritHost
+        ? await buildHostBody({ ctx, messages, stream, temperature, model: cfg.model })
+        : buildCustomBody({ cfg, messages, temperature });
+    // 调试面板「🐛 AI 输入」的数据源：记在共用提示词注入与 body 定型之后，展示真实请求。
+    _bridge.setLastDebugPayload({ model: body.model || 'gpt-4o-mini', messages });
     const additional = parseAdditionalParams(cfg.spAdditionalParams);
-    // 剔除参数：把用户指定的字段从 body 删掉，规避不接受这些参数的兼容端点报 400
-    // （如哈基米/Gemini 代理不认 frequency_penalty）。固定路由字段受保护，不会被删。
+    // 剔除参数：把用户指定的字段从 body 删掉，规避不接受这些参数的端点报 400
+    // （如 Gemini 代理不认 frequency_penalty）。连接/鉴权/消息字段受保护，不会被删。
+    // 必须先于「附加参数并入 / 切自定义通道」执行，否则序列化后的参数里仍会残留被剔除项。
     for (const p of cfg.excludeParams || []) {
         const key = String(p).trim();
         if (key && !PROTECTED_BODY_KEYS.has(key)) { delete body[key]; delete additional[key]; }
     }
-    if (Object.keys(additional).length) {
+    if (inheritHost) {
+        // 继承模式下附加参数直接并入酒馆生成的 body；连接、凭证与输出合同字段已在校验层拦住。
+        if (Object.keys(additional).length) Object.assign(body, additional);
+    } else if (Object.keys(additional).length) {
         // OpenAI 宿主通道过滤未知字段；自定义通道才把原生 JSON 参数送至上游。
         // 排除参数最后生效；凭证取本配置，空参数仍沿原通道，不继承 QQJ 的参数。
         body.chat_completion_source = 'custom';
@@ -258,7 +314,7 @@ async function postChatCompletionCore({ cfg, messages, temperature, signal: inpu
         },
     });
     // 构画不指定输出上限；上游可能仍有自己的硬限制或默认长度。
-    _bridge.setLastDebugPayload({ model: cfg.model || 'gpt-4o-mini', messages, outputLimit: null, outputLimitOmitted: true });
+    _bridge.setLastDebugPayload({ model: body.model || 'gpt-4o-mini', messages, outputLimit: null, outputLimitOmitted: true });
 
     // 全生命周期超时：内部 AbortController 同时受外部 signal 与定时器控制，
     // 覆盖建连 + 非流式 JSON 读取 + 流式 SSE 读取。超时转成明确报错而非静默卡死。
@@ -382,7 +438,7 @@ export async function callMemoryApi(messages, signal = null, diagnosticSink = nu
 // world info is NOT auto-injected here so the beautify pass stays clean.
 export async function callTheaterApi(messages, { signal = null, userName = null, charName = null, diagnosticModule = 'theater', diagnosticSink = null } = {}) {
     const cfg = loadTheaterCfg();
-    if (!cfg.url || !cfg.key) throw makeDiagnosticError('config-missing');
+    if (!isCfgReady(cfg)) throw makeDiagnosticError(cfg?.mode === API_MODE_HOST ? 'host-unavailable' : 'config-missing');
     const ctx = getContext();
     if (!userName && !charName) return postChatCompletion({ cfg, messages, temperature: GEN_TEMPERATURE, signal, userName: ctx?.name1 || '用户', charName: ctx?.name2 || '角色', diagnosticModule, diagnosticSink });
     return postChatCompletion({ cfg, messages, temperature: GEN_TEMPERATURE, signal, userName: userName || ctx?.name1 || '用户', charName: charName || ctx?.name2 || '角色', diagnosticModule, diagnosticSink });

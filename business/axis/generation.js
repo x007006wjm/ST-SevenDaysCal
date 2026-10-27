@@ -93,7 +93,7 @@ export function createAxisGenerationController(env = {}) {
     const trigger = async (supplement = false) => {
         const participant = env.captureParticipantIdentity?.() || null;
         if (axisState.isGeneratingAlmanac) return { status: 'skipped' };
-        const cfg = env.config?.(); if (!cfg?.url || !cfg?.key) { const error = makeDiagnosticError('config-missing'); env.failure?.(error, supplement, env.context?.().chatId, participant); env.missingApi?.(); return { status: 'failed', reason: 'api' }; }
+        const cfg = env.config?.(); if (!cfg?.ready && (!cfg?.url || !cfg?.key)) { const error = makeDiagnosticError('config-missing'); env.failure?.(error, supplement, env.context?.().chatId, participant); env.missingApi?.(); return { status: 'failed', reason: 'api' }; }
         if (!env.context?.().chatId) { env.failure?.(makeDiagnosticError('request'), supplement, null, participant); env.missingChat?.(); return { status: 'failed', reason: 'chat' }; }
         if (!supplement && (env.loadItems?.() || []).length) { const ok = await env.confirm?.(); if (!ok) return { status: 'cancelled' }; }
                 return run(supplement, participant);

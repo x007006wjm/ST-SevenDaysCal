@@ -81,7 +81,7 @@ export function createOutlineJudge({
         try {
             const ctx = context?.();
             const config = loadConfig?.() || {};
-            if (!config.url || !config.key) {
+            if (!config.ready && (!config.url || !config.key)) {
                 finish(task);
                 return { status: 'skipped' };
             }
@@ -156,7 +156,7 @@ export function createOutlineJudge({
         if (!beats.length || current < 1) return { status: 'skipped' };
         const ctx = context?.();
         const config = loadConfig?.() || {};
-        if (!config.url || !config.key) { const error = makeDiagnosticError('config-missing'); clearFailure('relocate', target); failure('relocate', target, error); logDiagnostic?.(safeDiagnosticLog('outline', 'request', error, { background: true })); return { status: 'failed', error }; }
+        if (!config.ready && (!config.url || !config.key)) { const error = makeDiagnosticError('config-missing'); clearFailure('relocate', target); failure('relocate', target, error); logDiagnostic?.(safeDiagnosticLog('outline', 'request', error, { background: true })); return { status: 'failed', error }; }
         abort();
         const baseline = outlineBaseline(saved);
         const task = makeOwner(target, baseline);

@@ -221,12 +221,12 @@ export function createLinesFeature(env = {}) {
         if (!shouldAdvance) env.refreshInlineWindow?.(true);
         const cfg = env.loadConfig?.();
         let result = { status: 'skipped', reason: shouldAdvance ? 'unavailable' : 'not-requested' };
-        if (shouldAdvance && !runtime.busy && cfg?.url && cfg?.key) {
+        if (shouldAdvance && !runtime.busy && (cfg?.ready || (cfg?.url && cfg?.key))) {
             const swipeId = Number(env.swipeId?.(messageId) ?? 0);
             result = await generation?.run?.(true, { mesId: Number(messageId), swipeId }, null, null, null, trigger) || result;
         } else if (shouldAdvance && runtime.busy) {
             result = { status: 'skipped', reason: 'busy' };
-        } else if (shouldAdvance && (!cfg?.url || !cfg?.key)) {
+        } else if (shouldAdvance && !(cfg?.ready || (cfg?.url && cfg?.key))) {
             result = { status: 'skipped', reason: 'no-api' };
         }
         if (shouldAdvance && result?.status !== 'updated') return result;
@@ -415,7 +415,7 @@ export function createLinesFeature(env = {}) {
     const rerunSwipe = async ({ mesId, forceRegen = false } = {}) => {
         const swipe = env.swipeEnv || {};
         const cfg = swipe.loadConfig?.() || {};
-        if (!cfg.url || !cfg.key) return;
+        if (!(cfg?.ready || (cfg.url && cfg.key))) return;
         const chatId = swipe.chatId?.();
         const swipeId = Number(swipe.swipeId?.(mesId) ?? 0);
         if (env.isEditing?.()) return;
